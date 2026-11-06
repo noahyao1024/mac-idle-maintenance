@@ -1,0 +1,10 @@
+{
+  "simulator_age_days": 3,
+  "minimum_idle_minutes": 15,
+  "npm_cache_max_gib": 8,
+  "npm_cleanup_cooldown_days": 7,
+  "derived_data_age_days": 30,
+  "log_age_days": 30,
+  "excluded_simulator_ids": [],
+  "developer_dir": ""
+}
