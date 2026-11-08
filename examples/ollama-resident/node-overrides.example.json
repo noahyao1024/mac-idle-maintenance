@@ -1,0 +1,4 @@
+{
+  "models": ["qwen3.5:9b"],
+  "max_concurrent": 1
+}
