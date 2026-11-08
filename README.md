@@ -112,6 +112,12 @@ Memory reclamation shuts down eligible simulators and retains their data. It
 does not unload resident LLMs or stop other services. macOS manages compression
 and swap; the tool does not run `purge` or delete swap files.
 
+### Optional resident Qwen setup
+
+The [Ollama resident example](examples/ollama-resident/README.md) includes the
+Qwen preloader, launchd template, persistent service defaults and llmhub model
+restriction used alongside maintenance. Install this optional setup separately.
+
 ## Limits and safety
 
 - `lastUsedAt` and keyboard/mouse idle time are heuristics, not proof that a

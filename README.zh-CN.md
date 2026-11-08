@@ -45,6 +45,11 @@ DeviceHub 单独保持打开不会阻止闲置清理。
 不会停止 Qwen、OpenClaw 或 Multica。缓存删除后，下次安装或构建可能需要重新下载、生成文件。
 缓存直接删除，不经过废纸篓；请先查看预览。没有遥测和上报功能。
 
+## 可选 Qwen 常驻配置
+
+[Ollama 常驻示例](examples/ollama-resident/README.md) 包含 Qwen 预加载脚本、launchd 模板、
+持久服务参数和 llmhub 模型白名单示例。此配置单独安装，维护工具的安装命令不会自动启用它。
+
 ## 配置与停用
 
 - 配置：`~/Library/Application Support/MacIdleMaintenance/config.json`，参考 [配置示例](config.example.json)。
