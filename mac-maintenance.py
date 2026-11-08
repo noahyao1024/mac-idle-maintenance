@@ -19,6 +19,8 @@ HOME = Path.home()
 BASE = HOME / "Library/Application Support/MacIdleMaintenance"
 DEFAULTS = {
     "simulator_age_days": 3,
+    "memory_pressure_cleanup": False,
+    "memory_pressure_simulator_age_hours": 24,
     "minimum_idle_minutes": 15,
     "npm_cache_max_gib": 8,
     "npm_cleanup_cooldown_days": 7,
@@ -47,7 +49,10 @@ def developer_environment(config):
 def validate_config(config):
     for key, default in DEFAULTS.items():
         value = config[key]
-        if isinstance(default, (int, float)):
+        if isinstance(default, bool):
+            if not isinstance(value, bool):
+                raise ValueError(f"Invalid boolean: {key}")
+        elif isinstance(default, (int, float)):
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"Invalid positive finite threshold: {key}")
     exclusions = config["excluded_simulator_ids"]
@@ -106,6 +111,63 @@ def process_guards():
     return developer_busy, package_busy
 
 
+def read_memory_pressure():
+    """Darwin reports normal=1, warning=2, critical=4; unknown fails closed."""
+    try:
+        level = int(command(["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"]))
+        return level if level in {1, 2, 4} else None
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def parse_memory_stats(vm_stats, system_stats):
+    page_size = re.search(r"page size of (\d+) bytes", vm_stats)
+    physical = re.search(r"hw.memsize:\s*(\d+)", system_stats)
+    swap = re.search(r"used\s*=\s*([\d.]+)([BKMGT])", system_stats)
+    if not page_size or not physical or not swap:
+        raise ValueError("Incomplete memory statistics")
+    pages = dict((name.strip(), int(count)) for name, count in
+                 re.findall(r"^([^:\n]+):\s*(\d+)\.", vm_stats, re.M))
+    page_mib = int(page_size[1]) / 2**20
+    return {
+        "physical_mib": int(physical[1]) / 2**20,
+        "free_mib": pages["Pages free"] * page_mib,
+        "inactive_mib": pages["Pages inactive"] * page_mib,
+        "wired_mib": pages["Pages wired down"] * page_mib,
+        "compressed_mib": pages["Pages occupied by compressor"] * page_mib,
+        "swap_used_mib": float(swap[1]) * 1024**"BKMGT".index(swap[2]) / 2**20,
+    }
+
+
+def report_memory(stage):
+    """Read-only diagnostics run even when activity guards skip cleanup."""
+    try:
+        stats = parse_memory_stats(command(["/usr/bin/vm_stat"]), command([
+            "/usr/sbin/sysctl", "hw.memsize", "vm.swapusage"]))
+        pressure = {1: "normal", 2: "warning", 4: "critical"}.get(read_memory_pressure(), "unknown")
+        LOG.info("Memory %s: pressure=%s %s", stage, pressure,
+                 " ".join(f"{key}={value:.1f}" for key, value in stats.items()))
+        # RSS includes shared pages, and is not a prediction of reclaimed RAM.
+        # Executable names only: never read or log process arguments.
+        processes = command(["/bin/ps", "-axo", "rss=,comm="])
+        largest = []
+        for line in processes.splitlines():
+            fields = line.strip().split(None, 1)
+            if len(fields) == 2 and fields[0].isdigit():
+                largest.append((int(fields[0]), Path(fields[1]).name))
+        LOG.info("Largest process RSS (MiB; shared pages included): %s", json.dumps([
+            {"executable": name, "rss_mib": round(rss / 1024, 1)}
+            for rss, name in sorted(largest, reverse=True)[:5]], ensure_ascii=False))
+    except (OSError, RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
+        LOG.warning("Memory %s diagnostics unavailable: %s", stage, error)
+
+
+def simulator_cleanup_age(config, pressure):
+    if config["memory_pressure_cleanup"] and pressure in {2, 4}:
+        return min(config["simulator_age_days"], config["memory_pressure_simulator_age_hours"] / 24)
+    return config["simulator_age_days"]
+
+
 def allocated_bytes(path):
     if not path.exists() or path.is_symlink():
         return 0
@@ -136,7 +198,10 @@ def maintain_simulators(config, apply, now):
         return
     devices = json.loads(command(["/usr/bin/xcrun", "simctl", "list", "devices", "--json"],
                                  timeout=120, env=env))["devices"]
-    candidates = simulator_candidates(devices, now, config["simulator_age_days"],
+    age_days = simulator_cleanup_age(config, read_memory_pressure())
+    LOG.info("Simulator minimum age: %.1f hours (memory pressure cleanup=%s)",
+             age_days * 24, config["memory_pressure_cleanup"])
+    candidates = simulator_candidates(devices, now, age_days,
                                       config["excluded_simulator_ids"])
     for device in candidates:
         LOG.info("%s shutdown simulator: %s [%s], lastUsedAt=%s",
@@ -149,7 +214,9 @@ def maintain_simulators(config, apply, now):
                 break
             current = json.loads(command(["/usr/bin/xcrun", "simctl", "list", "devices", "--json"],
                                          timeout=120, env=env))["devices"]
-            eligible = simulator_candidates(current, time.time(), config["simulator_age_days"],
+            # Recover the normal age threshold if memory pressure has subsided.
+            current_age = simulator_cleanup_age(config, read_memory_pressure())
+            eligible = simulator_candidates(current, time.time(), current_age,
                                              config["excluded_simulator_ids"])
             if any(d["udid"] == device["udid"] for d in eligible):
                 command(["/usr/bin/xcrun", "simctl", "shutdown", device["udid"]],
@@ -260,6 +327,7 @@ def main():
         LOG.info("Mode=%s idle_minutes=%s developer_busy=%s free_disk=%.2f GiB",
                  "APPLY" if args.apply else "PREVIEW", round(idle, 1) if idle is not None else None,
                  developer_busy, shutil.disk_usage(HOME).free / 2**30)
+        report_memory("before")
         if args.apply and (idle is None or idle < config["minimum_idle_minutes"]):
             LOG.info("Skip changes: computer is active or idle status is unknown")
             return 0
@@ -288,6 +356,8 @@ def main():
             temp = state_path.with_suffix(".tmp")
             temp.write_text(json.dumps(state, indent=2) + "\n")
             temp.replace(state_path)
+        if args.apply:
+            report_memory("after")
         LOG.info("Finished: free_disk=%.2f GiB failures=%d", shutil.disk_usage(HOME).free / 2**30, failures)
         return int(bool(failures))
 

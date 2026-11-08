@@ -14,6 +14,8 @@ Preview by default. No sudo or memory purging.
 | npm download cache | Clear `~/.npm/_cacache` above 8 GiB, at most once every 7 days |
 | Xcode DerivedData | Remove direct child directories with nothing modified in 30 days |
 | Old logs | Remove `.log` and `.gz` files older than 30 days under npm and CoreSimulator logs |
+| Memory diagnostics | Log native memory pressure, physical/free/inactive/wired/compressed memory, swap used, and the five largest process RSS values |
+| Memory pressure cleanup (opt-in) | At warning/critical pressure, allow shutdown of booted simulators unused for at least 24 hours |
 
 Changes require **15 minutes without keyboard/mouse activity**. Unknown idle
 state means no changes. Simulator/build/log cleanup skips recognized Xcode,
@@ -90,6 +92,25 @@ python3 mac-maintenance.py --config /path/to/config.json
 Add protected device UDIDs to `excluded_simulator_ids`. An empty `developer_dir`
 selects Xcode automatically. Find device IDs with `xcrun simctl list devices`;
 if needed, prefix it with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
+
+### Memory monitoring and reclamation
+
+Every check records memory diagnostics, even when user activity prevents cleanup.
+Process diagnostics contain executable names and RSS only, without arguments.
+RSS includes shared pages and is not an estimate of how much RAM a shutdown frees.
+
+Set `"memory_pressure_cleanup": true` to reclaim memory from old booted simulators
+sooner when macOS reports warning or critical pressure. The normal 3-day age is
+then reduced to `memory_pressure_simulator_age_hours` (24 by default). This never
+increases a shorter configured normal age. Idle, developer activity, exclusion,
+and known-date guards still apply; pressure and eligibility are checked again
+before each shutdown. Normal or unknown pressure uses the normal age threshold.
+Swap use alone never triggers the shorter threshold. This is a scheduled check,
+not a continuous pressure watcher; use a 1-hour schedule for more frequent checks.
+
+Memory reclamation shuts down eligible simulators and retains their data. It
+does not unload resident LLMs or stop other services. macOS manages compression
+and swap; the tool does not run `purge` or delete swap files.
 
 ## Limits and safety
 
