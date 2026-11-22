@@ -1,5 +1,7 @@
 {
   "simulator_age_days": 3,
+  "memory_pressure_cleanup": false,
+  "memory_pressure_simulator_age_hours": 24,
   "minimum_idle_minutes": 15,
   "npm_cache_max_gib": 8,
   "npm_cleanup_cooldown_days": 7,
